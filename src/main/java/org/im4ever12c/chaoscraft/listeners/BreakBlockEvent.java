@@ -1,13 +1,23 @@
+/*
+    @CLASS-TITLE: BreakBlockEvent.java
+    @CLASS-DESCRIPTION: This class applies a random modifier to block break events.
+    Modifiers include non-deadly effects such as spawning mobs, altering drops/XP, summoning lightning,
+    or triggering a timed explosion that displays a countdown.
+ */
+
 package org.im4ever12c.chaoscraft.listeners;
 
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
-import org.bukkit.entity.*;
+import org.bukkit.entity.ArmorStand;
+import org.bukkit.entity.EntityType;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.scheduler.BukkitRunnable;
+import org.im4ever12c.chaoscraft.ChaosCraft;
 
 import java.util.Arrays;
 import java.util.List;
@@ -18,13 +28,11 @@ public class BreakBlockEvent implements Listener {
     private final Random random = new Random();
 
     @EventHandler
-    public void onBlockBreak(BlockBreakEvent breakEvent) {
-        // This code picks exactly ONE random modifier based on weighting,
-        // which can also result in NO_EVENT if chosen.
-
+    public void onBlockBreak(BlockBreakEvent event) {
+        // Pick exactly ONE random modifier based on weighted rarities.
         BlockBreakModifier chosen = getRandomModifier();
         if (chosen != null) {
-            chosen.apply(breakEvent, random);
+            chosen.apply(event, random);
         }
     }
 
@@ -33,53 +41,46 @@ public class BreakBlockEvent implements Listener {
      * If NO_EVENT is chosen, nothing will happen.
      */
     private BlockBreakModifier getRandomModifier() {
-        // Sum of all rarities
         double totalWeight = 0.0;
         for (BlockBreakModifier mod : BlockBreakModifier.values()) {
             totalWeight += mod.getRarity();
         }
-
-        // Get a random number between [0, totalWeight)
         double roll = random.nextDouble() * totalWeight;
-
-        // Go through each modifier in turn, subtracting its rarity.
         for (BlockBreakModifier mod : BlockBreakModifier.values()) {
             if (roll < mod.getRarity()) {
                 return mod;
             }
             roll -= mod.getRarity();
         }
-
-        return null; // Just in case, though it should never happen with the above logic.
+        return null; // Should not happen
     }
 
     /**
-     * Enum describing possible modifiers. Each has:
+     * Enum describing possible block break modifiers.
+     * Each modifier has:
      *   - A "rarity" (chance weight)
-     *   - An "apply()" method that is called if chosen
+     *   - An "apply()" method that is called if chosen.
      * <p>
-     * We include NO_EVENT with its own rarity, so sometimes nothing happens.
+     * No modifier here is intended to be deadly to players.
      */
     private enum BlockBreakModifier {
         /**
-         * Sometimes no effect at all!
+         * No effect.
          */
         NO_EVENT(0.20) {
             @Override
             public void apply(BlockBreakEvent event, Random random) {
-                // Do nothing
+                // Do nothing.
             }
         },
-
         /**
-         * Spawns exactly one random mob (animal, monster, or boss).
+         * Spawn exactly one random mob (animal, monster, or boss) at the broken block’s location.
          */
         SPAWN_RANDOM_MOB(0.15) {
             @Override
             public void apply(BlockBreakEvent event, Random random) {
                 World world = event.getBlock().getWorld();
                 Location loc = event.getBlock().getLocation().add(0.5, 0, 0.5);
-
                 List<EntityType> possibleMobs = Arrays.asList(
                         EntityType.COW,
                         EntityType.PIG,
@@ -89,31 +90,48 @@ public class BreakBlockEvent implements Listener {
                         EntityType.SPIDER,
                         EntityType.WITHER
                 );
-
                 EntityType chosenType = possibleMobs.get(random.nextInt(possibleMobs.size()));
                 world.spawnEntity(loc, chosenType);
             }
         },
-
         /**
-         * Create an explosion at the block location with a random size
-         * from creeper-size (3F) up to ~10x creeper (30F).
+         * Timed Explosion: Instead of exploding immediately, spawn a temporarily invisible ArmorStand
+         * with a visible countdown name tag (from "5" down to "1"). After 5 seconds, remove the ArmorStand
+         * and create an explosion at that location. The explosion strength is randomly chosen between
+         * 1× and 10× a creeper explosion (base value of 3).
          */
-        EXPLODING_BLOCK(0.10) {
+        TIMED_EXPLOSION(0.10) {
             @Override
             public void apply(BlockBreakEvent event, Random random) {
                 World world = event.getBlock().getWorld();
-                Location loc = event.getBlock().getLocation().add(0.5, 0.5, 0.5);
-
-                float explosionSize = 3F + random.nextFloat() * 27F;
-
-                // If you don’t want the block to drop items, you can call:
-                // event.setDropItems(false);
-
-                world.createExplosion(loc.getX(), loc.getY(), loc.getZ(), explosionSize, false, true);
+                // Use the center of the broken block.
+                final Location center = event.getBlock().getLocation().clone().add(0.5, 0.5, 0.5);
+                // Spawn an ArmorStand to display the countdown.
+                final ArmorStand timerStand = world.spawn(center, ArmorStand.class);
+                timerStand.setGravity(false);
+                timerStand.setVisible(false);
+                timerStand.setCustomNameVisible(true);
+                timerStand.setCustomName("5");
+                // Schedule a countdown task.
+                new BukkitRunnable() {
+                    int countdown = 5;
+                    @Override
+                    public void run() {
+                        if (countdown > 0) {
+                            timerStand.setCustomName(String.valueOf(countdown));
+                            countdown--;
+                        } else {
+                            timerStand.remove();
+                            // Determine explosion power: base creeper explosion is ~3,
+                            // multiplied by a random factor between 1 and 10.
+                            float explosionPower = 3.0F * (1 + random.nextInt(10));
+                            world.createExplosion(center.getX(), center.getY(), center.getZ(), explosionPower, false, true);
+                            cancel();
+                        }
+                    }
+                }.runTaskTimer(ChaosCraft.getPlugin(ChaosCraft.class), 0L, 20L);
             }
         },
-
         /**
          * Cancel normal block drops and replace them with random "precious" loot.
          */
@@ -121,7 +139,6 @@ public class BreakBlockEvent implements Listener {
             @Override
             public void apply(BlockBreakEvent event, Random random) {
                 event.setDropItems(false);
-
                 List<Material> precious = Arrays.asList(
                         Material.DIAMOND,
                         Material.EMERALD,
@@ -129,17 +146,14 @@ public class BreakBlockEvent implements Listener {
                         Material.IRON_INGOT,
                         Material.APPLE
                 );
-
                 Location dropLoc = event.getBlock().getLocation().add(0.5, 0.5, 0.5);
-                int dropCount = 1 + random.nextInt(3); // 1..3 items
-
+                int dropCount = 1 + random.nextInt(3);
                 for (int i = 0; i < dropCount; i++) {
                     Material chosen = precious.get(random.nextInt(precious.size()));
                     event.getBlock().getWorld().dropItemNaturally(dropLoc, new ItemStack(chosen));
                 }
             }
         },
-
         /**
          * Change XP dropped from block break to a random amount (0..30).
          */
@@ -149,7 +163,6 @@ public class BreakBlockEvent implements Listener {
                 event.setExpToDrop(random.nextInt(31));
             }
         },
-
         /**
          * Strike lightning near the block location.
          */
@@ -157,41 +170,18 @@ public class BreakBlockEvent implements Listener {
             @Override
             public void apply(BlockBreakEvent event, Random random) {
                 Location loc = event.getBlock().getLocation();
-                int xOffset = random.nextInt(3) - 1; // -1..1
+                int xOffset = random.nextInt(3) - 1; // -1, 0, or 1
                 int zOffset = random.nextInt(3) - 1;
-
                 Location strikeLoc = loc.add(xOffset, 0, zOffset);
-                if (strikeLoc.getWorld() == null) {
-                    return;
+                if (strikeLoc.getWorld() != null) {
+                    strikeLoc.getWorld().strikeLightning(strikeLoc);
                 }
-                strikeLoc.getWorld().strikeLightning(strikeLoc);
-            }
-        },
-
-        /**
-         * Launch the player who broke the block upward.
-         */
-        LAUNCH_BREAKER(0.05) {
-            @Override
-            public void apply(BlockBreakEvent event, Random random) {
-                Player player = event.getPlayer();
-
-                double launchFactor = 1.0 + random.nextDouble() * 2.0; // 1..3
-                player.setVelocity(player.getVelocity().add(player.getLocation().getDirection().setY(launchFactor)));
-                player.sendMessage("You have been launched by the block you broke!");
             }
         };
 
         private final double rarity;
-
-        BlockBreakModifier(double rarity) {
-            this.rarity = rarity;
-        }
-
-        public double getRarity() {
-            return rarity;
-        }
-
+        BlockBreakModifier(double rarity) { this.rarity = rarity; }
+        public double getRarity() { return rarity; }
         public abstract void apply(BlockBreakEvent event, Random random);
     }
 }
