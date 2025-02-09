@@ -1,0 +1,4 @@
+name: ChaosCraft
+version: '${project.version}'
+main: org.im4ever12c.chaoscraft.ChaosCraft
+api-version: '1.21'
